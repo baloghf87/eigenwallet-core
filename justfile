@@ -156,3 +156,8 @@ code2prompt_single_crate crate:
 prepare-windows-build:
     cd dev-scripts && ./ubuntu_build_x86_86-w64-mingw32-gcc.sh
 
+# Smoke-test the market-data service against the live network (builds & runs the Docker image).
+# Defaults to mainnet; pass args to change, e.g. `just market-data-smoke --testnet`.
+market-data-smoke *ARGS:
+	MARKET_DATA_ARGS="{{ARGS}}" ./swap-market-data/scripts/smoke-test.sh
+
