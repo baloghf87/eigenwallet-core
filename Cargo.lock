@@ -10901,6 +10901,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "swap-market-data"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arti-client",
+ "axum",
+ "chrono",
+ "clap 4.6.0",
+ "futures",
+ "libp2p",
+ "libp2p-tor",
+ "rustls 0.23.37",
+ "semver",
+ "serde",
+ "serde_json",
+ "swap-env",
+ "swap-p2p",
+ "tokio",
+ "tor-rtcompat",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "swap-orchestrator"
 version = "4.0.0"
 dependencies = [

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - GUI: Update the Flatpak GNOME runtime from 48 (end-of-life) to 50.
 
+- New `market-data` service:
+  a headless collector that connects to the network,
+  discovers makers,
+  polls their quotes,
+  and serves the current liquidity snapshot (a synthetic orderbook) over a REST API.
+  Intended to run as a container in Kubernetes.
+  See `swap-market-data/README.md` and `swap-market-data/API.md`.
+
 ## [4.15.0] - 2026-09-22
 
 - GUI: Support outbound connections to makers through libp2p circuit relays.

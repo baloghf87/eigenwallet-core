@@ -1,0 +1,72 @@
+[package]
+name = "swap-market-data"
+version = "0.1.0"
+edition = "2024"
+description = "Headless service that collects live XMR/BTC maker quotes from the eigenwallet network and serves them as a REST orderbook snapshot"
+
+[[bin]]
+name = "market-data"
+path = "src/main.rs"
+
+[dependencies]
+# Our crates
+swap-env = { path = "../swap-env" }
+swap-p2p = { path = "../swap-p2p" }
+
+# Networking
+libp2p = { workspace = true, features = [
+    "tcp",
+    "yamux",
+    "dns",
+    "noise",
+    "websocket",
+    "request-response",
+    "ping",
+    "rendezvous",
+    "identify",
+    "macros",
+    "cbor",
+    "json",
+    "tokio",
+    "serde",
+] }
+libp2p-tor = { workspace = true }
+
+# Tor
+arti-client = { workspace = true, features = ["tokio", "rustls"] }
+tor-rtcompat = { workspace = true, features = ["tokio", "rustls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
+# Web framework
+axum = { version = "0.8.4" }
+tower-http = { version = "0.6.6", features = ["cors"] }
+
+# Async
+futures = { workspace = true }
+tokio = { workspace = true, features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+    "net",
+    "signal",
+] }
+
+# CLI / config
+clap = { version = "4.0", features = ["derive", "env"] }
+
+# Serialization
+chrono = { version = "0.4", features = ["serde"] }
+semver = { workspace = true }
+serde = { workspace = true }
+
+# Utils
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

@@ -22,6 +22,7 @@ members = [
   "swap-feed",
   "swap-fs",
   "swap-machine",
+  "swap-market-data",
   "swap-orchestrator",
   "swap-p2p",
   "swap-proptest",

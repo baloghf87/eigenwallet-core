@@ -1,0 +1,69 @@
+# Example Kubernetes manifests for the market-data collector.
+# Adjust the image reference to wherever you push the built image.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: market-data
+  labels:
+    app: market-data
+spec:
+  # Stateless, but each replica maintains its own independent view and its own
+  # network connections. A single replica is usually sufficient; scale up only
+  # if you want redundancy (consumers should treat replicas as interchangeable).
+  replicas: 1
+  selector:
+    matchLabels:
+      app: market-data
+  template:
+    metadata:
+      labels:
+        app: market-data
+    spec:
+      containers:
+        - name: market-data
+          image: swap-market-data:latest
+          args: []
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: MARKET_DATA_PORT
+              value: "8080"
+            - name: RUST_LOG
+              value: "info"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            # Discovering makers and fetching the first quote can take a while,
+            # especially over Tor. Allow generous startup time.
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: market-data
+  labels:
+    app: market-data
+spec:
+  selector:
+    app: market-data
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
