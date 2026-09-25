@@ -62,6 +62,7 @@ serde = { workspace = true }
 
 # Utils
 anyhow = { workspace = true }
+data-encoding = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 

@@ -5,9 +5,15 @@ use libp2p::{
     swarm::{NetworkBehaviour, THandlerInEvent, ToSwarm},
 };
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     task::Poll,
 };
+
+/// Registrations requested per discover call. Without a limit a rendezvous node returns every
+/// registration of the namespace in one response, which on mainnet exceeds libp2p-rendezvous'
+/// 1 MiB message cap: the response fails to decode and surfaces only as `ErrorCode::Unavailable`.
+/// Larger namespaces are paged through with the returned cookie.
+const DISCOVERY_PAGE_LIMIT: u64 = 25;
 
 use crate::{
     behaviour_util::{BackoffTracker, ConnectionTracker, Trigger},
@@ -45,6 +51,10 @@ pub struct Behaviour {
 
     // Used to trigger an immediate refresh of discovery
     refresh: Trigger,
+
+    // Per rendezvous node: the cookie of the last discover response, so the next request continues
+    // after the registrations already received (pagination + incremental refresh)
+    cookies: HashMap<PeerId, rendezvous::Cookie>,
 }
 
 // This could use notice to recursively discover other rendezvous nodes
@@ -99,6 +109,7 @@ impl Behaviour {
             to_swarm: VecDeque::new(),
             rendezvous_nodes: rendezvous_nodes.into_iter().collect(),
             refresh: Trigger::new(),
+            cookies: HashMap::new(),
         }
     }
 
@@ -128,6 +139,8 @@ impl NetworkBehaviour for Behaviour {
             self.inner.redial.refresh();
             self.pending_to_discover.clear();
             self.to_discover.clear();
+            // a forced refresh re-discovers everything, not just registrations since the last cookie
+            self.cookies.clear();
 
             // Schedule immediate discovery for all rendezvous nodes
             for node in self.rendezvous_nodes.clone() {
@@ -155,8 +168,8 @@ impl NetworkBehaviour for Behaviour {
                 // If we are connected to the peer, send a discovery request
                 self.inner.rendezvous.discover(
                     Some(self.namespace.clone()),
-                    None,
-                    None,
+                    self.cookies.get(peer).cloned(),
+                    Some(DISCOVERY_PAGE_LIMIT),
                     peer.clone(),
                 );
 
@@ -170,9 +183,12 @@ impl NetworkBehaviour for Behaviour {
                     libp2p::rendezvous::client::Event::Discovered {
                         rendezvous_node,
                         registrations,
-                        ..
+                        cookie,
                     },
                 )) => {
+                    let full_page = registrations.len() as u64 >= DISCOVERY_PAGE_LIMIT;
+                    self.cookies.insert(rendezvous_node, cookie);
+
                     tracing::trace!(
                         ?rendezvous_node,
                         num_registrations = %registrations.len(),
@@ -200,11 +216,20 @@ impl NetworkBehaviour for Behaviour {
                                 );
                             }
 
-                            self.pending_to_discover.insert(
-                                rendezvous_node,
-                                tokio::time::sleep(crate::defaults::DISCOVERY_INTERVAL).boxed(),
-                            );
                         }
+                    }
+
+                    // A full page means more registrations are waiting: fetch the next page right
+                    // away. Otherwise refresh (incrementally, via the cookie) after the interval.
+                    // Scheduled even for an empty page so an empty namespace is re-polled.
+                    self.backoff.reset(&rendezvous_node);
+                    if full_page {
+                        self.to_discover.push_back(rendezvous_node);
+                    } else {
+                        self.pending_to_discover.insert(
+                            rendezvous_node,
+                            tokio::time::sleep(crate::defaults::DISCOVERY_INTERVAL).boxed(),
+                        );
                     }
                     continue;
                 }

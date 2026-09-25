@@ -84,12 +84,15 @@ Flags or environment variables:
 | `--port` | `MARKET_DATA_PORT` | `8080` | HTTP bind port. |
 | `--testnet` | `MARKET_DATA_TESTNET` | `false` | Use the testnet rendezvous namespace. |
 | `--tor` | `MARKET_DATA_TOR` | `false` | Route over Tor (uses onion rendezvous addresses). |
+| `--socks-proxy` | `MARKET_DATA_SOCKS_PROXY` | unset | Route **every** connection (clearnet and onion) through an external SOCKS5 proxy `host:port`, e.g. a shared tor daemon, instead of the embedded Tor. Excludes `--tor`. |
 | `--rendezvous` | `MARKET_DATA_RENDEZVOUS` | built-in public nodes | Comma-separated multiaddr override. |
 
 Log level via `RUST_LOG` (e.g. `RUST_LOG=info,swap_p2p=debug`).
 
 When `--tor` is off, only clearnet (`wss`) rendezvous addresses are used; when
-on, only `/onion3` addresses are used.
+on, only `/onion3` addresses are used. With `--socks-proxy` all of them are used:
+host names and onion addresses are resolved by the proxy (SOCKS5 domain
+requests, no local DNS), see `src/socks.rs`.
 
 ## Building
 
@@ -168,13 +171,18 @@ and readiness probes wired to `/healthz` and `/readyz`) is in
 
 ## Verification status
 
-- The crate is **fully type-checked**: `cargo check -p swap-market-data`, including
-  `--tests --all-targets`, passes cleanly.
-- It could not be **linked/run** in the sandbox it was authored in, because that
-  environment blocks `monero-sys`'s C++ dependency downloads. The unit tests in
-  `src/api.rs` compile but must be executed where a full `monero-sys` build is
-  possible (CI or a normal dev machine). Use the smoke test above to validate
-  end-to-end against the live network.
+- Built (`docker build -f swap-market-data/Dockerfile .`, and `cargo build` in the
+  Dockerfile's toolchain image) and unit-tested (`cargo test -p swap-market-data`).
+- **Verified against mainnet (2026-09-25)** through an external tor via
+  `--socks-proxy`: 24 makers (13 with liquidity), reached over clearnet `wss`
+  and `/onion3`, best ask ≈ 0.0067 BTC/XMR.
+- **Fixed: maker discovery never worked on mainnet** (in clearnet, Tor and SOCKS
+  mode alike): discover requests had no limit, so the rendezvous nodes answered
+  with every registration of the namespace in one response, which exceeds
+  libp2p-rendezvous' 1 MiB message cap. The failure surfaces only as
+  `DiscoverFailed { error: Unavailable }`. `swap-p2p`'s discovery now requests
+  pages of 25 and continues with the returned cookie (which also makes the
+  periodic refresh incremental). This affects the CLI/GUI discovery too.
 
 ## Known limitations & possible follow-ups
 

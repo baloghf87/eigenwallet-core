@@ -7,6 +7,7 @@
 //! this API over time.
 
 mod api;
+mod socks;
 mod transport;
 
 use std::sync::Arc;
@@ -54,6 +55,12 @@ struct Args {
     /// addresses). Off by default; clearnet `wss` addresses are used instead.
     #[arg(long, env = "MARKET_DATA_TOR", default_value_t = false)]
     tor: bool,
+
+    /// Route all connections through an external SOCKS5 proxy (`host:port`,
+    /// e.g. a shared tor daemon) instead of the embedded Tor client. Both onion
+    /// and clearnet rendezvous addresses are used in this mode.
+    #[arg(long = "socks-proxy", env = "MARKET_DATA_SOCKS_PROXY", conflicts_with = "tor")]
+    socks_proxy: Option<String>,
 
     /// Override the rendezvous point multiaddrs (comma-separated / repeatable).
     /// Defaults to the network's public rendezvous nodes.
@@ -123,7 +130,10 @@ async fn main() -> Result<()> {
         )),
     };
 
-    let transport = transport::new(&identity, maybe_tor_client)?;
+    let transport = match &args.socks_proxy {
+        Some(proxy) => transport::new_socks(&identity, proxy)?,
+        None => transport::new(&identity, maybe_tor_client)?,
+    };
 
     let mut swarm = SwarmBuilder::with_existing_identity(identity)
         .with_tokio()
@@ -142,6 +152,7 @@ async fn main() -> Result<()> {
         network = %namespace,
         rendezvous_nodes = rendezvous_addresses.len(),
         tor = args.tor,
+        socks_proxy = args.socks_proxy.as_deref().unwrap_or("-"),
         "Starting market-data collector"
     );
 
@@ -183,7 +194,8 @@ async fn run_swarm(mut swarm: libp2p::Swarm<Behaviour>, snapshot_tx: watch::Send
 }
 
 /// Returns the rendezvous addresses to use, filtered by transport: onion
-/// addresses require Tor; clearnet addresses are used otherwise.
+/// addresses require Tor; clearnet addresses are used otherwise. A SOCKS5
+/// proxy (Tor) reaches both, so every address is kept.
 fn resolve_rendezvous_addresses(args: &Args) -> Vec<Multiaddr> {
     let configured = if args.rendezvous.is_empty() {
         swap_env::defaults::default_rendezvous_points()
@@ -193,7 +205,7 @@ fn resolve_rendezvous_addresses(args: &Args) -> Vec<Multiaddr> {
 
     configured
         .into_iter()
-        .filter(|addr| is_onion(addr) == args.tor)
+        .filter(|addr| args.socks_proxy.is_some() || is_onion(addr) == args.tor)
         .collect()
 }
 

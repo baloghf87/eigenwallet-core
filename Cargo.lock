@@ -10909,6 +10909,7 @@ dependencies = [
  "axum",
  "chrono",
  "clap 4.6.0",
+ "data-encoding",
  "futures",
  "libp2p",
  "libp2p-tor",

@@ -20,6 +20,8 @@ use libp2p::{PeerId, Transport, dns, identity, noise, tcp, websocket, yamux};
 use libp2p_tor::{AddressConversion, TorTransport};
 use tor_rtcompat::tokio::TokioRustlsRuntime;
 
+use crate::socks::Socks5Transport;
+
 const AUTH_AND_MULTIPLEX_TIMEOUT: Duration = Duration::from_secs(15);
 // The quote/discovery path only uses a handful of protocols concurrently.
 const MAX_NUM_STREAMS: usize = 5;
@@ -65,6 +67,23 @@ pub fn new(
     // claim the address (ignoring the `/ws` suffix) and skip the WebSocket
     // handshake.
     let transport = ws_transport.or_transport(plain_transport).boxed();
+
+    authenticate_and_multiplex(transport, identity)
+}
+
+/// Creates the libp2p transport that routes every connection (websocket and
+/// plain, clearnet and onion) through the SOCKS5 proxy at `proxy` (`host:port`),
+/// e.g. a shared `tor` daemon, instead of the embedded arti client.
+pub fn new_socks(
+    identity: &identity::Keypair,
+    proxy: &str,
+) -> Result<Boxed<(PeerId, StreamMuxerBox)>> {
+    // As in `new`: `WsConfig` must come first so `/ws`/`/wss` addresses get the
+    // WebSocket handshake before the plain transport can claim them.
+    let ws_transport = websocket::WsConfig::new(Socks5Transport::new(proxy));
+    let transport = ws_transport
+        .or_transport(Socks5Transport::new(proxy))
+        .boxed();
 
     authenticate_and_multiplex(transport, identity)
 }
