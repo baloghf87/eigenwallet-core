@@ -68,6 +68,7 @@ Source layout:
 |---|---|
 | `GET /orderbook` | Current snapshot with summary (best price, total depth), sorted best-first. |
 | `GET /quotes` | Raw per-maker rows, unsorted. |
+| `GET /status` | Network health: our swap version, connected peers, rendezvous connections, quote-poll outcomes and the makers' advertised versions (`maker_versions`, `max_maker_version`, `makers_newer_than_ours`). |
 | `GET /healthz` | Liveness. |
 | `GET /readyz` | Readiness — 200 once the first quote is received, else 503. |
 

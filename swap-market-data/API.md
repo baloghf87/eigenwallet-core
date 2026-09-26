@@ -124,6 +124,24 @@ fields — for consumers that want the raw list.
 | `makers` | array of [MakerQuote](#makerquote) | Unsorted. |
 | `disclaimer` | string | As above. |
 
+### `GET /status`
+
+Is this build still in step with the network, and are we connected?
+
+| Field | Type | Description |
+|---|---|---|
+| `generated_at` | string (RFC 3339) | When this status was produced. |
+| `ready` | boolean | At least one quote has been received. |
+| `our_version` | string \| null | The `swap` release this collector is built from (makers/takers run `asb`/`swap` of the same versioning). |
+| `connected_peers` | integer | Peers with an open connection. |
+| `rendezvous_total` / `rendezvous_connected` | integer | Configured rendezvous nodes, and how many are connected. |
+| `discovered_peers` | integer | Makers known to the quote poller. |
+| `quotes_received` / `quotes_not_supported` / `quotes_failed` | integer | The last quote poll's outcomes per maker (`not_supported`: the peer lacks our bid-quote protocol). |
+| `maker_count` / `makers_with_liquidity` | integer | As in `/orderbook`. |
+| `maker_versions` | object | Maker count per advertised version (`unknown` when not advertised). |
+| `max_maker_version` | string \| null | The newest advertised maker version. |
+| `makers_newer_than_ours` | integer | Makers advertising a newer version than `our_version`. |
+
 ### `GET /healthz`
 
 Liveness. Always returns `200 OK` with body `ok` while the process is running.

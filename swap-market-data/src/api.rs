@@ -4,6 +4,8 @@
 //! updated by the swarm task in `main.rs`. Handlers read the current value
 //! without locking.
 
+use std::collections::BTreeMap;
+
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
@@ -177,21 +179,116 @@ impl From<Snapshot> for QuotesResponse {
     }
 }
 
-/// Shared handler state: a receiver for the latest snapshot.
+/// The swap-network release this collector is built from (the maker/taker
+/// software, not this crate): read from the workspace's `swap` manifest so it
+/// follows every upstream rebase.
+pub fn swap_version() -> Option<semver::Version> {
+    include_str!("../../swap/Cargo.toml")
+        .lines()
+        .find_map(|line| line.strip_prefix("version = \""))
+        .and_then(|rest| rest.split('"').next())
+        .and_then(|v| semver::Version::parse(v).ok())
+}
+
+/// Connectivity to the swap network, kept current by the swarm task.
+#[derive(Debug, Clone, Default)]
+pub struct NetworkState {
+    pub connected_peers: usize,
+    pub rendezvous_total: usize,
+    pub rendezvous_connected: usize,
+    /// Makers known to the quote poller, by the last poll's outcome.
+    pub discovered_peers: usize,
+    pub quotes_received: usize,
+    pub quotes_not_supported: usize,
+    pub quotes_failed: usize,
+}
+
+/// `GET /status`: is this build still in step with the network, and are we
+/// connected? Makers advertise their `asb` version (libp2p identify); a maker
+/// fleet running a newer minor/major release than ours is the network moving on.
+#[derive(Debug, Clone, Serialize)]
+pub struct StatusResponse {
+    pub generated_at: DateTime<Utc>,
+    pub ready: bool,
+    pub our_version: Option<String>,
+    pub connected_peers: usize,
+    pub rendezvous_total: usize,
+    pub rendezvous_connected: usize,
+    pub discovered_peers: usize,
+    pub quotes_received: usize,
+    pub quotes_not_supported: usize,
+    pub quotes_failed: usize,
+    pub maker_count: usize,
+    pub makers_with_liquidity: usize,
+    /// Maker count per advertised version (`unknown` when not advertised).
+    pub maker_versions: BTreeMap<String, usize>,
+    pub max_maker_version: Option<String>,
+    /// Makers advertising a newer release than `our_version`.
+    pub makers_newer_than_ours: usize,
+}
+
+impl StatusResponse {
+    pub fn build(snapshot: &Snapshot, network: &NetworkState, ours: Option<&semver::Version>) -> Self {
+        let mut maker_versions = BTreeMap::new();
+        let mut max: Option<semver::Version> = None;
+        let mut newer = 0;
+        for maker in &snapshot.makers {
+            let parsed = maker.version.as_deref().and_then(|v| semver::Version::parse(v).ok());
+            let key = parsed.as_ref().map_or_else(|| "unknown".to_string(), |v| v.to_string());
+            *maker_versions.entry(key).or_insert(0) += 1;
+            if let Some(v) = parsed {
+                if ours.is_some_and(|o| &v > o) {
+                    newer += 1;
+                }
+                if max.as_ref().is_none_or(|m| &v > m) {
+                    max = Some(v);
+                }
+            }
+        }
+        Self {
+            generated_at: Utc::now(),
+            ready: snapshot.ready,
+            our_version: ours.map(|v| v.to_string()),
+            connected_peers: network.connected_peers,
+            rendezvous_total: network.rendezvous_total,
+            rendezvous_connected: network.rendezvous_connected,
+            discovered_peers: network.discovered_peers,
+            quotes_received: network.quotes_received,
+            quotes_not_supported: network.quotes_not_supported,
+            quotes_failed: network.quotes_failed,
+            maker_count: snapshot.makers.len(),
+            makers_with_liquidity: snapshot.makers.iter().filter(|m| m.has_liquidity).count(),
+            maker_versions,
+            max_maker_version: max.map(|v| v.to_string()),
+            makers_newer_than_ours: newer,
+        }
+    }
+}
+
+/// Shared handler state: receivers for the latest snapshot and network state.
 #[derive(Clone)]
 pub struct AppState {
     pub snapshot: watch::Receiver<Snapshot>,
+    pub network: watch::Receiver<NetworkState>,
+    pub our_version: Option<semver::Version>,
 }
 
 /// Builds the axum router serving the API.
-pub fn router(snapshot: watch::Receiver<Snapshot>) -> Router {
+pub fn router(snapshot: watch::Receiver<Snapshot>, network: watch::Receiver<NetworkState>) -> Router {
     Router::new()
         .route("/orderbook", get(orderbook_handler))
         .route("/quotes", get(quotes_handler))
+        .route("/status", get(status_handler))
         .route("/healthz", get(healthz_handler))
         .route("/readyz", get(readyz_handler))
         .layer(CorsLayer::permissive())
-        .with_state(AppState { snapshot })
+        .with_state(AppState { snapshot, network, our_version: swap_version() })
+}
+
+async fn status_handler(State(state): State<AppState>) -> Json<StatusResponse> {
+    let snapshot = state.snapshot.borrow().clone();
+    let network = state.network.borrow().clone();
+    Json(StatusResponse::build(&snapshot, &network, state.our_version.as_ref()))
 }
 
 async fn orderbook_handler(State(state): State<AppState>) -> Json<OrderbookResponse> {
@@ -286,5 +383,32 @@ mod tests {
         assert_eq!(json["makers"][0]["refund_policy"]["type"], "FullRefund");
         // reserve_proof is omitted when absent.
         assert!(json["makers"][0].get("reserve_proof").is_none());
+    }
+
+    #[test]
+    fn status_counts_maker_versions_against_ours() {
+        let mut newer = maker("newer", 3_900, 10);
+        newer.version = Some("4.16.0".to_string());
+        let mut unknown = maker("unknown", 3_800, 0);
+        unknown.version = None;
+        let snapshot = snapshot(vec![maker("old", 3_850, 10), newer, unknown]);
+        let network = NetworkState { connected_peers: 5, rendezvous_total: 3, rendezvous_connected: 2, ..Default::default() };
+        let ours = semver::Version::parse("4.15.0").unwrap();
+
+        let status = StatusResponse::build(&snapshot, &network, Some(&ours));
+
+        assert_eq!(status.our_version.as_deref(), Some("4.15.0"));
+        assert_eq!(status.maker_count, 3);
+        assert_eq!(status.makers_with_liquidity, 2);
+        assert_eq!(status.max_maker_version.as_deref(), Some("4.16.0"));
+        assert_eq!(status.makers_newer_than_ours, 1);
+        assert_eq!(status.maker_versions.get("1.0.0"), Some(&1));
+        assert_eq!(status.maker_versions.get("unknown"), Some(&1));
+        assert_eq!(status.rendezvous_connected, 2);
+    }
+
+    #[test]
+    fn swap_version_is_read_from_the_workspace() {
+        assert!(swap_version().is_some());
     }
 }

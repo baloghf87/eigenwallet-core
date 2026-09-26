@@ -28,7 +28,7 @@ use tracing_subscriber::EnvFilter;
 use swap_p2p::libp2p_ext::MultiAddrExt;
 use swap_p2p::protocols::{quotes_cached, rendezvous};
 
-use crate::api::Snapshot;
+use crate::api::{NetworkState, Snapshot};
 
 /// How long an otherwise-idle connection to a maker is kept open. Redial keeps
 /// reconnecting, so this only bounds resource use.
@@ -112,7 +112,7 @@ async fn main() -> Result<()> {
     let identity = identity::Keypair::generate_ed25519();
     let namespace = rendezvous::XmrBtcNamespace::from_is_testnet(args.testnet);
 
-    let rendezvous_peer_ids = rendezvous_addresses
+    let rendezvous_peer_ids: Vec<libp2p::PeerId> = rendezvous_addresses
         .iter()
         .filter_map(|addr| addr.extract_peer_id())
         .collect();
@@ -120,7 +120,7 @@ async fn main() -> Result<()> {
     let behaviour = Behaviour {
         rendezvous: rendezvous::discovery::Behaviour::new(
             identity.clone(),
-            rendezvous_peer_ids,
+            rendezvous_peer_ids.clone(),
             namespace.into(),
         ),
         ping: ping::Behaviour::new(ping::Config::new()),
@@ -158,8 +158,12 @@ async fn main() -> Result<()> {
 
     // The swarm task produces snapshots; the HTTP server serves the latest one.
     let (snapshot_tx, snapshot_rx) = watch::channel(Snapshot::empty());
+    let (network_tx, network_rx) = watch::channel(NetworkState {
+        rendezvous_total: rendezvous_peer_ids.len(),
+        ..NetworkState::default()
+    });
 
-    tokio::spawn(run_swarm(swarm, snapshot_tx));
+    tokio::spawn(run_swarm(swarm, rendezvous_peer_ids, snapshot_tx, network_tx));
 
     let bind_address = format!("{}:{}", args.host, args.port);
     let listener = tokio::net::TcpListener::bind(&bind_address)
@@ -168,28 +172,60 @@ async fn main() -> Result<()> {
 
     tracing::info!(%bind_address, "Serving REST API");
 
-    axum::serve(listener, api::router(snapshot_rx))
+    axum::serve(listener, api::router(snapshot_rx, network_rx))
         .await
         .context("HTTP server error")?;
 
     Ok(())
 }
 
-/// Drives the libp2p swarm, forwarding each `CachedQuotes` snapshot to the API.
-async fn run_swarm(mut swarm: libp2p::Swarm<Behaviour>, snapshot_tx: watch::Sender<Snapshot>) {
+/// Drives the libp2p swarm, forwarding each `CachedQuotes` snapshot to the API
+/// and keeping the connectivity state (`/status`) current.
+async fn run_swarm(
+    mut swarm: libp2p::Swarm<Behaviour>,
+    rendezvous_peer_ids: Vec<libp2p::PeerId>,
+    snapshot_tx: watch::Sender<Snapshot>,
+    network_tx: watch::Sender<NetworkState>,
+) {
+    use libp2p::swarm::SwarmEvent;
+
     loop {
         let event = swarm.select_next_some().await;
 
-        let libp2p::swarm::SwarmEvent::Behaviour(BehaviourEvent::Quote(
-            quotes_cached::Event::CachedQuotes { quotes },
-        )) = event
-        else {
-            continue;
-        };
-
-        let snapshot = Snapshot::from_cached_quotes(quotes);
-        tracing::debug!(makers = snapshot.makers.len(), "Updated orderbook snapshot");
-        let _ = snapshot_tx.send(snapshot);
+        match event {
+            SwarmEvent::Behaviour(BehaviourEvent::Quote(quotes_cached::Event::CachedQuotes {
+                quotes,
+            })) => {
+                let snapshot = Snapshot::from_cached_quotes(quotes);
+                tracing::debug!(makers = snapshot.makers.len(), "Updated orderbook snapshot");
+                let _ = snapshot_tx.send(snapshot);
+            }
+            SwarmEvent::Behaviour(BehaviourEvent::Quote(quotes_cached::Event::Progress {
+                peers,
+            })) => {
+                let count = |status: quotes_cached::QuoteStatus| {
+                    peers.iter().filter(|(_, s)| *s == status).count()
+                };
+                network_tx.send_modify(|state| {
+                    state.discovered_peers = peers.len();
+                    state.quotes_received = count(quotes_cached::QuoteStatus::Received);
+                    state.quotes_not_supported = count(quotes_cached::QuoteStatus::NotSupported);
+                    state.quotes_failed = count(quotes_cached::QuoteStatus::Failed);
+                });
+            }
+            SwarmEvent::ConnectionEstablished { .. } | SwarmEvent::ConnectionClosed { .. } => {
+                let connected_peers = swarm.network_info().num_peers();
+                let rendezvous_connected = rendezvous_peer_ids
+                    .iter()
+                    .filter(|peer| swarm.is_connected(peer))
+                    .count();
+                network_tx.send_modify(|state| {
+                    state.connected_peers = connected_peers;
+                    state.rendezvous_connected = rendezvous_connected;
+                });
+            }
+            _ => {}
+        }
     }
 }
 
